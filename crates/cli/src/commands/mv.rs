@@ -120,11 +120,11 @@ async fn move_local_to_s3(
 
     // If not dry run, delete local file(s)
     if !args.dry_run {
-        if src.is_file() {
-            if let Err(e) = std::fs::remove_file(src) {
-                formatter.error(&format!("Failed to delete local file: {e}"));
-                return ExitCode::GeneralError;
-            }
+        if src.is_file()
+            && let Err(e) = std::fs::remove_file(src)
+        {
+            formatter.error(&format!("Failed to delete local file: {e}"));
+            return ExitCode::GeneralError;
         } else if src.is_dir()
             && args.recursive
             && let Err(e) = std::fs::remove_dir_all(src)
