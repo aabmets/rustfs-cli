@@ -284,6 +284,140 @@ impl ObjectStore for S3Client {
 
         Ok(data)
     }
+
+    async fn put_object(
+        &self,
+        path: &RemotePath,
+        data: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<ObjectInfo> {
+        let size = data.len() as i64;
+        let body = aws_sdk_s3::primitives::ByteStream::from(data);
+
+        let mut request = self
+            .inner
+            .put_object()
+            .bucket(&path.bucket)
+            .key(&path.key)
+            .body(body);
+
+        if let Some(ct) = content_type {
+            request = request.content_type(ct);
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+
+        let mut info = ObjectInfo::file(&path.key, size);
+        if let Some(etag) = response.e_tag() {
+            info.etag = Some(etag.trim_matches('"').to_string());
+        }
+        info.last_modified = Some(chrono::Utc::now());
+
+        Ok(info)
+    }
+
+    async fn delete_object(&self, path: &RemotePath) -> Result<()> {
+        self.inner
+            .delete_object()
+            .bucket(&path.bucket)
+            .key(&path.key)
+            .send()
+            .await
+            .map_err(|e| {
+                let err_str = e.to_string();
+                if err_str.contains("NotFound") || err_str.contains("NoSuchKey") {
+                    Error::NotFound(path.to_string())
+                } else {
+                    Error::Network(err_str)
+                }
+            })?;
+
+        Ok(())
+    }
+
+    async fn delete_objects(&self, bucket: &str, keys: Vec<String>) -> Result<Vec<String>> {
+        use aws_sdk_s3::types::{Delete, ObjectIdentifier};
+
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let objects: Vec<ObjectIdentifier> = keys
+            .iter()
+            .map(|k| ObjectIdentifier::builder().key(k).build().unwrap())
+            .collect();
+
+        let delete = Delete::builder()
+            .set_objects(Some(objects))
+            .build()
+            .map_err(|e| Error::General(e.to_string()))?;
+
+        let response = self
+            .inner
+            .delete_objects()
+            .bucket(bucket)
+            .delete(delete)
+            .send()
+            .await
+            .map_err(|e| Error::Network(e.to_string()))?;
+
+        // Collect deleted keys
+        let deleted: Vec<String> = response
+            .deleted()
+            .iter()
+            .filter_map(|d| d.key().map(|k| k.to_string()))
+            .collect();
+
+        // Check for errors
+        if !response.errors().is_empty() {
+            let error_keys: Vec<String> = response
+                .errors()
+                .iter()
+                .filter_map(|e| e.key().map(|k| k.to_string()))
+                .collect();
+            tracing::warn!("Failed to delete some objects: {:?}", error_keys);
+        }
+
+        Ok(deleted)
+    }
+
+    async fn copy_object(&self, src: &RemotePath, dst: &RemotePath) -> Result<ObjectInfo> {
+        // Build copy source: bucket/key
+        let copy_source = format!("{}/{}", src.bucket, src.key);
+
+        let response = self
+            .inner
+            .copy_object()
+            .copy_source(&copy_source)
+            .bucket(&dst.bucket)
+            .key(&dst.key)
+            .send()
+            .await
+            .map_err(|e| {
+                let err_str = e.to_string();
+                if err_str.contains("NotFound") || err_str.contains("NoSuchKey") {
+                    Error::NotFound(src.to_string())
+                } else {
+                    Error::Network(err_str)
+                }
+            })?;
+
+        // Get size from head_object since copy doesn't return it
+        let info = self.head_object(dst).await?;
+
+        // Update etag from copy response if available
+        let mut result = info;
+        if let Some(copy_result) = response.copy_object_result() {
+            if let Some(etag) = copy_result.e_tag() {
+                result.etag = Some(etag.trim_matches('"').to_string());
+            }
+        }
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]

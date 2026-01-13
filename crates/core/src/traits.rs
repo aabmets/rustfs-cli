@@ -169,10 +169,22 @@ pub trait ObjectStore: Send + Sync {
     /// Get object content as bytes
     async fn get_object(&self, path: &RemotePath) -> Result<Vec<u8>>;
 
-    // Phase 3: Transfer operations (remaining)
-    // async fn put_object(&self, path: &RemotePath, data: impl AsyncRead) -> Result<()>;
-    // async fn delete_object(&self, path: &RemotePath) -> Result<()>;
-    // async fn copy_object(&self, src: &RemotePath, dst: &RemotePath) -> Result<()>;
+    /// Upload object from bytes
+    async fn put_object(
+        &self,
+        path: &RemotePath,
+        data: Vec<u8>,
+        content_type: Option<&str>,
+    ) -> Result<ObjectInfo>;
+
+    /// Delete an object
+    async fn delete_object(&self, path: &RemotePath) -> Result<()>;
+
+    /// Delete multiple objects (batch delete)
+    async fn delete_objects(&self, bucket: &str, keys: Vec<String>) -> Result<Vec<String>>;
+
+    /// Copy object within S3 (server-side copy)
+    async fn copy_object(&self, src: &RemotePath, dst: &RemotePath) -> Result<ObjectInfo>;
 
     // Phase 4: Advanced operations
     // async fn presigned_url(&self, path: &RemotePath, expires: Duration) -> Result<String>;

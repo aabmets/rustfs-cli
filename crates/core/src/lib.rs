@@ -18,5 +18,5 @@ pub mod traits;
 pub use alias::{Alias, AliasManager};
 pub use config::{Config, ConfigManager};
 pub use error::{Error, Result};
-pub use path::{parse_path, RemotePath};
+pub use path::{parse_path, ParsedPath, RemotePath};
 pub use traits::{Capabilities, ListOptions, ListResult, ObjectInfo, ObjectStore};

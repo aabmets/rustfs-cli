@@ -11,10 +11,14 @@ use crate::output::OutputConfig;
 
 mod alias;
 mod cat;
+pub mod cp;
 mod head;
 mod ls;
 mod mb;
+mod mv;
+mod pipe;
 mod rb;
+mod rm;
 mod stat;
 
 /// rc - Rust S3 CLI Client
@@ -74,16 +78,19 @@ pub enum Commands {
 
     /// Show object metadata
     Stat(stat::StatArgs),
-    // Phase 3: Transfer commands
-    // /// Copy objects
-    // Cp(cp::CpArgs),
-    // /// Move objects
-    // Mv(mv::MvArgs),
-    // /// Remove objects
-    // Rm(rm::RmArgs),
-    // /// Stream stdin to an object
-    // Pipe(pipe::PipeArgs),
 
+    // Phase 3: Transfer commands
+    /// Copy objects (local<->S3, S3<->S3)
+    Cp(cp::CpArgs),
+
+    /// Move objects (copy + delete source)
+    Mv(mv::MvArgs),
+
+    /// Remove objects
+    Rm(rm::RmArgs),
+
+    /// Stream stdin to an object
+    Pipe(pipe::PipeArgs),
     // Phase 4: Advanced commands
     // /// Find objects matching criteria
     // Find(find::FindArgs),
@@ -126,5 +133,9 @@ pub async fn execute(cli: Cli) -> ExitCode {
         Commands::Cat(args) => cat::execute(args, output_config).await,
         Commands::Head(args) => head::execute(args, output_config).await,
         Commands::Stat(args) => stat::execute(args, output_config).await,
+        Commands::Cp(args) => cp::execute(args, output_config).await,
+        Commands::Mv(args) => mv::execute(args, output_config).await,
+        Commands::Rm(args) => rm::execute(args, output_config).await,
+        Commands::Pipe(args) => pipe::execute(args, output_config).await,
     }
 }

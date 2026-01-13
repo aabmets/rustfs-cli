@@ -45,6 +45,7 @@ console.workspace = true
 # Utilities
 chrono.workspace = true
 humansize.workspace = true
+mime_guess.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

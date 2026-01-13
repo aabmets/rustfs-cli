@@ -51,6 +51,7 @@ humansize = "2.1"
 url = "2.5"
 futures = "0.3"
 async-trait = "0.1"
+mime_guess = "2.0"
 
 # Testing
 tempfile = "3.19"
