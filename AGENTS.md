@@ -37,13 +37,17 @@
 
 ### 4. 完成后
 
-1. 运行 `cargo fmt --all`
-2. 运行 `cargo clippy --workspace -- -D warnings`
-3. 运行 `cargo test --workspace`
+**⚠️ 重要：每次提交前必须通过所有检查！**
+
+1. 运行 `cargo fmt --all` - 代码格式化
+2. 运行 `cargo clippy --workspace -- -D warnings` - 静态检查，**必须零警告**
+3. 运行 `cargo test --workspace` - 单元测试，**必须全部通过**
 4. 更新 `IMPLEMENTATION_PLAN.md` 状态
-5. **每完成一个阶段，创建一次 git commit**
+5. **只有上述检查全部通过后，才能创建 git commit**
    - Commit message format: `feat(phase-N): <description>`
    - Example: `feat(phase-1): implement alias commands and core infrastructure`
+
+**禁止在检查未通过的情况下提交代码！**
 
 ---
 
@@ -269,19 +273,23 @@ mod tests {
 
 ## PR Checklist
 
+**⚠️ 每次提交前必须确认以下所有检查项通过：**
+
 Before submitting a PR, confirm all of the following:
 
+- [ ] `cargo fmt --all --check` passes (**必须**)
+- [ ] `cargo clippy --workspace -- -D warnings` passes (**必须，零警告**)
+- [ ] `cargo test --workspace` passes (**必须，全部通过**)
 - [ ] No changes to CLI/JSON/config contracts (or followed Breaking Change process)
 - [ ] New behaviors have unit tests
 - [ ] Each new command has at least 2 exit code test scenarios
 - [ ] Golden tests pass (output schema not broken)
 - [ ] No sensitive information in logs
-- [ ] `cargo fmt --all --check` passes
-- [ ] `cargo clippy --workspace -- -D warnings` passes
-- [ ] `cargo test --workspace` passes
 - [ ] Complex logic has appropriate comments (explaining WHY)
 - [ ] Updated IMPLEMENTATION_PLAN.md status (if applicable)
 - [ ] Commit message and PR description are in English
+
+**禁止跳过检查直接提交！CI 失败的代码不应被合并。**
 
 ---
 
