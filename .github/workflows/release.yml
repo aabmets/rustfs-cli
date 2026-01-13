@@ -1,46 +1,395 @@
-name: Release
+name: Build and Release
 
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - "*.*.*"
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g., v0.1.0)'
-        required: true
+        description: "Release tag (e.g., 0.1.0). If provided, will build in release mode."
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    name: Create Release
+  # Build strategy check - determine build type and version
+  build-check:
+    name: Build Strategy Check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
+      version: ${{ steps.check.outputs.version }}
+      is_release: ${{ steps.check.outputs.is_release }}
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Get version
-        id: get_version
+      - name: Determine build strategy
+        id: check
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            VERSION="${{ github.event.inputs.tag }}"
-          else
-            VERSION="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          version=""
+          is_release=false
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            # Release event - get version from release tag
+            version="${{ github.event.release.tag_name }}"
+            is_release=true
+            echo "📦 Release build detected: $version"
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            # Tag push - get version from tag
+            version="${GITHUB_REF#refs/tags/}"
+            is_release=true
+            echo "🏷️ Tag build detected: $version"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            # Manual trigger with tag input - treat as release
+            version="${{ github.event.inputs.tag }}"
+            is_release=true
+            echo "🏷️ Manual release build detected: $version"
+          else
+            # Manual trigger without tag or other
+            version="dev-$(git rev-parse --short HEAD)"
+            echo "🛠️ Development build detected: $version"
+          fi
+
+          # Ensure version starts with 'v' for release builds
+          if [[ "$is_release" == "true" ]] && [[ ! "$version" =~ ^v ]]; then
+            version="v${version}"
+            echo "ℹ️  Version normalized to: $version"
+          fi
+
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "is_release=$is_release" >> $GITHUB_OUTPUT
+
+          echo "📊 Build Summary:"
+          echo "  - Version: $version"
+          echo "  - Is release: $is_release"
+
+  build:
+    name: Build (${{ matrix.os_name }}-${{ matrix.arch }})
+    needs: build-check
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            os_name: linux
+            arch: amd64
+            artifact_name: rc
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            os_name: linux
+            arch: arm64
+            artifact_name: rc
+            cross: true
+
+          # macOS
+          - os: macos-13
+            target: x86_64-apple-darwin
+            os_name: macos
+            arch: amd64
+            artifact_name: rc
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            os_name: macos
+            arch: arm64
+            artifact_name: rc
+
+          # Windows
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            os_name: windows
+            arch: amd64
+            artifact_name: rc.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Install cross for cross-compilation
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # Build
+      - name: Build (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      # Package and prepare artifacts
+      - name: Prepare and package artifacts (Unix)
+        if: runner.os != 'Windows'
+        env:
+          VERSION: ${{ needs.build-check.outputs.version }}
+        run: |
+          mkdir -p artifacts
+
+          # Format: rustfs-cli-{os}-{arch}-{version}
+          ARTIFACT_PREFIX="rustfs-cli-${{ matrix.os_name }}-${{ matrix.arch }}"
+
+          # Create versioned archive
+          cd target/${{ matrix.target }}/release
+          tar -czvf "../../../artifacts/${ARTIFACT_PREFIX}-${VERSION}.tar.gz" ${{ matrix.artifact_name }}
+          cd ../../..
+
+          # Create latest archive (copy of versioned)
+          cp "artifacts/${ARTIFACT_PREFIX}-${VERSION}.tar.gz" "artifacts/${ARTIFACT_PREFIX}-latest.tar.gz"
+
+          # Generate checksums
+          cd artifacts
+          shasum -a 256 "${ARTIFACT_PREFIX}-${VERSION}.tar.gz" > "${ARTIFACT_PREFIX}-${VERSION}.tar.gz.sha256"
+          shasum -a 256 "${ARTIFACT_PREFIX}-latest.tar.gz" > "${ARTIFACT_PREFIX}-latest.tar.gz.sha256"
+          cd ..
+
+          echo "📦 Artifacts created:"
+          ls -la artifacts/
+
+      - name: Prepare and package artifacts (Windows)
+        if: runner.os == 'Windows'
+        env:
+          VERSION: ${{ needs.build-check.outputs.version }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts
+
+          # Format: rustfs-cli-{os}-{arch}-{version}
+          $ARTIFACT_PREFIX = "rustfs-cli-${{ matrix.os_name }}-${{ matrix.arch }}"
+
+          # Create versioned archive
+          $sourcePath = "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          $versionedZip = "artifacts/${ARTIFACT_PREFIX}-${env:VERSION}.zip"
+          Compress-Archive -Path $sourcePath -DestinationPath $versionedZip
+
+          # Create latest archive (copy of versioned)
+          $latestZip = "artifacts/${ARTIFACT_PREFIX}-latest.zip"
+          Copy-Item $versionedZip -Destination $latestZip
+
+          # Generate checksums
+          $versionedHash = (Get-FileHash -Path $versionedZip -Algorithm SHA256).Hash.ToLower()
+          $latestHash = (Get-FileHash -Path $latestZip -Algorithm SHA256).Hash.ToLower()
+
+          "${versionedHash}  ${ARTIFACT_PREFIX}-${env:VERSION}.zip" | Out-File -FilePath "artifacts/${ARTIFACT_PREFIX}-${env:VERSION}.zip.sha256" -Encoding utf8 -NoNewline
+          "${latestHash}  ${ARTIFACT_PREFIX}-latest.zip" | Out-File -FilePath "artifacts/${ARTIFACT_PREFIX}-latest.zip.sha256" -Encoding utf8 -NoNewline
+
+          Write-Host "📦 Artifacts created:"
+          Get-ChildItem -Path artifacts | Format-Table Name, Length -AutoSize
+
+      # Upload artifacts for later jobs
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustfs-cli-${{ matrix.os_name }}-${{ matrix.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      # Upload to Aliyun OSS
+      - name: Upload to Aliyun OSS
+        if: needs.build-check.outputs.is_release == 'true'
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.ALICLOUDOSS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.ALICLOUDOSS_KEY_SECRET }}
+          OSS_REGION: cn-beijing
+          OSS_ENDPOINT: https://oss-cn-beijing.aliyuncs.com
+        shell: bash
+        run: |
+          if [[ -z "$OSS_ACCESS_KEY_ID" ]]; then
+            echo "⚠️ OSS credentials not available, skipping OSS upload"
+            exit 0
+          fi
+
+          # Install ossutil
+          OSSUTIL_VERSION="2.1.1"
+          case "${{ matrix.os_name }}" in
+            macos)
+              if [[ "$(uname -m)" == "arm64" ]]; then
+                ARCH="arm64"
+              else
+                ARCH="amd64"
+              fi
+              OSSUTIL_ZIP="ossutil-${OSSUTIL_VERSION}-mac-${ARCH}.zip"
+              OSSUTIL_DIR="ossutil-${OSSUTIL_VERSION}-mac-${ARCH}"
+
+              curl -sL -o "$OSSUTIL_ZIP" "https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/${OSSUTIL_ZIP}"
+              unzip -q "$OSSUTIL_ZIP"
+              mv "${OSSUTIL_DIR}/ossutil" /usr/local/bin/
+              rm -rf "$OSSUTIL_DIR" "$OSSUTIL_ZIP"
+              chmod +x /usr/local/bin/ossutil
+              OSSUTIL_BIN=ossutil
+              ;;
+            linux)
+              OSSUTIL_ZIP="ossutil-${OSSUTIL_VERSION}-linux-amd64.zip"
+              OSSUTIL_DIR="ossutil-${OSSUTIL_VERSION}-linux-amd64"
+
+              curl -sL -o "$OSSUTIL_ZIP" "https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/${OSSUTIL_ZIP}"
+              unzip -q "$OSSUTIL_ZIP"
+              mv "${OSSUTIL_DIR}/ossutil" ./ossutil
+              rm -rf "$OSSUTIL_DIR" "$OSSUTIL_ZIP"
+              chmod +x ./ossutil
+              OSSUTIL_BIN=./ossutil
+              ;;
+            windows)
+              OSSUTIL_ZIP="ossutil-${OSSUTIL_VERSION}-windows-amd64.zip"
+              OSSUTIL_DIR="ossutil-${OSSUTIL_VERSION}-windows-amd64"
+
+              curl -sL -o "$OSSUTIL_ZIP" "https://gosspublic.alicdn.com/ossutil/v2/${OSSUTIL_VERSION}/${OSSUTIL_ZIP}"
+              unzip -q "$OSSUTIL_ZIP"
+              mv "${OSSUTIL_DIR}/ossutil.exe" ./ossutil.exe
+              rm -rf "$OSSUTIL_DIR" "$OSSUTIL_ZIP"
+              OSSUTIL_BIN=./ossutil.exe
+              ;;
+          esac
+
+          OSS_PATH="oss://rustfs-artifacts/artifacts/rustfs-cli/release/"
+
+          # Upload all artifacts to OSS
+          echo "📤 Uploading artifacts to $OSS_PATH..."
+          for file in artifacts/*; do
+            if [[ -f "$file" ]]; then
+              echo "Uploading: $file"
+              $OSSUTIL_BIN cp "$file" "$OSS_PATH" --force
+              echo "✅ Uploaded: $(basename "$file")"
+            fi
+          done
+
+          echo "✅ OSS upload completed successfully"
+
+  # Generate shell completions
+  completions:
+    name: Generate Shell Completions
+    needs: build-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Generate completions
+        run: |
+          mkdir -p completions
+          ./target/release/rc completions bash > completions/rc.bash
+          ./target/release/rc completions zsh > completions/_rc
+          ./target/release/rc completions fish > completions/rc.fish
+          ./target/release/rc completions powershell > completions/rc.ps1
+          tar -czvf completions.tar.gz completions/
+        continue-on-error: true
+
+      - name: Upload completions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: completions
+          path: completions.tar.gz
+          if-no-files-found: warn
+
+  # Upload release assets to GitHub Release
+  upload-release-assets:
+    name: Upload Release Assets
+    needs: [build-check, build, completions]
+    runs-on: ubuntu-latest
+    if: needs.build-check.outputs.is_release == 'true'
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: rustfs-cli-*
+          merge-multiple: true
+
+      - name: Download completions
+        uses: actions/download-artifact@v4
+        with:
+          name: completions
+          path: artifacts
+        continue-on-error: true
+
+      - name: Display structure of downloaded files
+        run: |
+          echo "📦 Downloaded artifacts:"
+          ls -laR artifacts/
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+
+          # Copy all artifacts (exclude latest versions for GitHub Release)
+          if [ -d "artifacts" ] && [ "$(ls -A artifacts)" ]; then
+            for file in artifacts/*; do
+              filename=$(basename "$file")
+              # Skip latest versions - only upload versioned artifacts to GitHub Release
+              if [[ "$filename" != *"-latest"* ]]; then
+                cp "$file" "release-assets/"
+                echo "✅ Added: $filename"
+              else
+                echo "⏭️ Skipped (latest): $filename"
+              fi
+            done
+          else
+            echo "⚠️ No artifacts found to copy"
+          fi
+
+          # Generate combined checksums file
+          cd release-assets
+          if ls *.tar.gz *.zip 2>/dev/null; then
+            sha256sum *.tar.gz *.zip 2>/dev/null > SHA256SUMS || true
+            echo "✅ SHA256SUMS generated"
+          fi
+
+          echo "📦 Release assets:"
+          ls -la
+
+      - name: Upload to GitHub Release (release event)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to GitHub Release (tag push or manual)
+        if: github.event_name != 'release'
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.get_version.outputs.version }}
-          release_name: Release ${{ steps.get_version.outputs.version }}
+          tag_name: ${{ needs.build-check.outputs.version }}
+          name: Release ${{ needs.build-check.outputs.version }}
+          files: release-assets/*
           draft: true
           prerelease: false
           body: |
@@ -63,172 +412,23 @@ jobs:
             ### Cargo
 
             ```bash
-            cargo install rc
+            cargo install rustfs-cli
             ```
-
-  build:
-    name: Build (${{ matrix.target }})
-    needs: create-release
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: rc
-            asset_name: rc-linux-amd64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact_name: rc
-            asset_name: rc-linux-arm64
-            cross: true
-
-          # macOS
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact_name: rc
-            asset_name: rc-darwin-amd64
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_name: rc
-            asset_name: rc-darwin-arm64
-
-          # Windows
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: rc.exe
-            asset_name: rc-windows-amd64.exe
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      # Install cross for cross-compilation
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      # Build
-      - name: Build (native)
-        if: "!matrix.cross"
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
-
-      # Package
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
-          cd ../../..
-          shasum -a 256 ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
-
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
-          cd ../../..
-          certutil -hashfile ${{ matrix.asset_name }}.zip SHA256 > ${{ matrix.asset_name }}.zip.sha256
-
-      # Upload to release
-      - name: Upload Release Asset (Unix)
-        if: runner.os != 'Windows'
-        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.asset_name }}.tar.gz
-          asset_name: ${{ matrix.asset_name }}.tar.gz
-          asset_content_type: application/gzip
 
-      - name: Upload Checksum (Unix)
-        if: runner.os != 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.asset_name }}.tar.gz.sha256
-          asset_name: ${{ matrix.asset_name }}.tar.gz.sha256
-          asset_content_type: text/plain
-
-      - name: Upload Release Asset (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.asset_name }}.zip
-          asset_name: ${{ matrix.asset_name }}.zip
-          asset_content_type: application/zip
-
-      - name: Upload Checksum (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./${{ matrix.asset_name }}.zip.sha256
-          asset_name: ${{ matrix.asset_name }}.zip.sha256
-          asset_content_type: text/plain
-
-  # Generate shell completions
-  completions:
-    name: Generate Shell Completions
-    needs: create-release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Generate completions
-        run: |
-          mkdir -p completions
-          ./target/release/rc completions bash > completions/rc.bash
-          ./target/release/rc completions zsh > completions/_rc
-          ./target/release/rc completions fish > completions/rc.fish
-          ./target/release/rc completions powershell > completions/rc.ps1
-          tar -czvf completions.tar.gz completions/
-        continue-on-error: true
-
-      - name: Upload completions
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./completions.tar.gz
-          asset_name: completions.tar.gz
-          asset_content_type: application/gzip
-        continue-on-error: true
-
+  # Publish to crates.io
   publish-crates:
     name: Publish to crates.io
-    needs: [ create-release, build ]
+    needs: [build-check, build]
     runs-on: ubuntu-latest
+    if: needs.build-check.outputs.is_release == 'true'
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Publish rc-core
         run: cargo publish --package rc-core --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -244,7 +444,6 @@ jobs:
       - name: Wait for crates.io
         run: sleep 30
 
-      - name: Publish rc
+      - name: Publish rustfs-cli
         run: cargo publish --package rustfs-cli --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         continue-on-error: true
-
