@@ -48,6 +48,13 @@ humansize.workspace = true
 mime_guess.workspace = true
 glob.workspace = true
 
+[features]
+default = []
+# Enable integration tests that require a running S3-compatible server
+integration = []
+# Enable golden tests for output format verification
+golden = []
+
 [dev-dependencies]
 tempfile.workspace = true
 
