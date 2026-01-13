@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Workspace crates
-rc-core = { path = "../core" }
-rc-s3 = { path = "../s3" }
+rc-core = { workspace = true }
+rc-s3 = { workspace = true }
 
 # Async runtime
 tokio.workspace = true

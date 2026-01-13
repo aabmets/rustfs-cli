@@ -8,7 +8,7 @@ description = "S3 SDK adapter for rc CLI client"
 
 [dependencies]
 # Workspace crates
-rc-core = { path = "../core" }
+rc-core = { workspace = true }
 
 # AWS SDK
 aws-sdk-s3.workspace = true
