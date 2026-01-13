@@ -272,4 +272,5 @@ This project is dual-licensed under MIT or Apache-2.0. See [LICENSE-MIT](LICENSE
 
 ## Acknowledgments
 
-- [aws-sdk-s3](https://crates.io/crates/aws-sdk-s3) - S3 SDK
+- [MinIO Client (mc)](https://github.com/minio/mc) - Inspiration for CLI design
+- [aws-sdk-s3](https://crates.io/crates/aws-sdk-s3) - AWS S3 SDK for Rust
