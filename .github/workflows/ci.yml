@@ -46,7 +46,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test --workspace --all-features
+        # Don't use --all-features as integration/golden require external services
+        # See integration.yml for those tests
+        run: cargo test --workspace
 
   build:
     name: Build (${{ matrix.os }})
@@ -73,67 +75,6 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-
-  integration:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Start RustFS
-        run: |
-          docker run -d --name rustfs \
-            -p 9000:9000 -p 9001:9001 \
-            -e RUSTFS_ROOT_USER=accesskey \
-            -e RUSTFS_ROOT_PASSWORD=secretkey \
-            -e RUSTFS_CONSOLE_ENABLE=true \
-            -e RUSTFS_CONSOLE_ADDRESS=:9001 \
-            rustfs/rustfs:latest
-      - name: Wait for RustFS
-        run: |
-          for i in {1..30}; do
-            curl -sf http://localhost:9000/health && break
-            echo "Waiting for RustFS... ($i/30)"
-            sleep 2
-          done
-          curl -sf http://localhost:9000/health || exit 1
-      - name: Run integration tests
-        run: cargo test --workspace --features integration
-        env:
-          TEST_S3_ENDPOINT: http://localhost:9000
-          TEST_S3_ACCESS_KEY: accesskey
-          TEST_S3_SECRET_KEY: secretkey
-
-  # Golden tests to verify output format stability
-  golden:
-    name: Golden Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Start RustFS
-        run: |
-          docker run -d --name rustfs \
-            -p 9000:9000 \
-            -e RUSTFS_ROOT_USER=accesskey \
-            -e RUSTFS_ROOT_PASSWORD=secretkey \
-            rustfs/rustfs:latest
-      - name: Wait for RustFS
-        run: |
-          for i in {1..30}; do
-            curl -sf http://localhost:9000/health && break
-            echo "Waiting for RustFS... ($i/30)"
-            sleep 2
-          done
-          curl -sf http://localhost:9000/health || exit 1
-      - name: Run golden tests
-        run: cargo test --workspace --features golden
-        env:
-          TEST_S3_ENDPOINT: http://localhost:9000
-          TEST_S3_ACCESS_KEY: accesskey
-          TEST_S3_SECRET_KEY: secretkey
 
   # Ensure protected files are not modified without proper process
   protected-files:
