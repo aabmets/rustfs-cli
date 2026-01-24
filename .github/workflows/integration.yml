@@ -26,16 +26,24 @@ jobs:
         run: |
           docker run -d --name rustfs \
             -p 9000:9000 \
+            -p 9001:9001 \
+            -v rustfs-data:/data \
             -e RUSTFS_ROOT_USER=accesskey \
             -e RUSTFS_ROOT_PASSWORD=secretkey \
             -e RUSTFS_ACCESS_KEY=accesskey \
             -e RUSTFS_SECRET_KEY=secretkey \
-            rustfs/rustfs:1.0.0-alpha.81 server /data
+            -e RUSTFS_VOLUMES=/data \
+            -e RUSTFS_ADDRESS=":9000" \
+            -e RUSTFS_CONSOLE_ENABLE="true" \
+            -e RUSTFS_CONSOLE_ADDRESS=":9001" \
+            rustfs/rustfs:1.0.0-alpha.81
 
       - name: Wait for RustFS
         run: |
           echo "Waiting for RustFS to start..."
+          sleep 3
           for i in {1..30}; do
+            # Try health endpoint
             if curl -sf http://localhost:9000/health > /dev/null 2>&1; then
               echo "RustFS is ready!"
               exit 0
