@@ -26,6 +26,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
       is_release: ${{ steps.check.outputs.is_release }}
+      has_token: ${{ steps.check.outputs.has_token }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -65,12 +66,19 @@ jobs:
             echo "ℹ️  Version normalized to: $version"
           fi
 
+          has_token="false"
+          if [ -n "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
+            has_token="true"
+          fi
+
           echo "version=$version" >> $GITHUB_OUTPUT
           echo "is_release=$is_release" >> $GITHUB_OUTPUT
+          echo "has_token=$has_token" >> $GITHUB_OUTPUT
 
           echo "📊 Build Summary:"
           echo "  - Version: $version"
           echo "  - Is release: $is_release"
+          echo "  - Publish crate: $has_token"
 
   build:
     name: Build (${{ matrix.os_name }}-${{ matrix.arch }})
@@ -424,7 +432,7 @@ jobs:
     name: Publish to crates.io
     needs: [ build-check, build ]
     runs-on: ubuntu-latest
-    if: needs.build-check.outputs.is_release == 'true'
+    if: needs.build-check.outputs.is_release == 'true' && needs.build-check.outputs.has_token == 'true'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
